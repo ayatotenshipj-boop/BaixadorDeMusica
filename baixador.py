@@ -144,19 +144,20 @@ def escolher_pendrive(cons) -> Path | None:
     if not drives:
         cons.print(
             "  [red]Nenhum pen-drive encontrado.[/] "
-            "Conecte pelo adaptador USB e tente de novo."
+            "Conecte o pen-drive no adaptador USB e tente de novo."
         )
         return None
     if len(drives) == 1:
         return drives[0]
 
-    cons.print("\n  Encontrei mais de um pen-drive. Qual você quer usar?")
-    for i, d in enumerate(drives, start=1):
-        cons.print(f"   [bold]{i}[/]) {d.name}")
-    escolha = input("  Digite o número e tecle Enter: ").strip()
+    # Mais de um pen-drive: numera sem mostrar códigos técnicos.
+    cons.print("  Encontrei mais de um pen-drive. Qual você quer usar?\n")
+    for i in range(1, len(drives) + 1):
+        cons.print(f"   {i}) Pen-drive {i}")
+    escolha = input("\n  Digite o número e tecle Enter: ").strip()
     if escolha.isdigit() and 1 <= int(escolha) <= len(drives):
         return drives[int(escolha) - 1]
-    cons.print("  [yellow]Opção inválida.[/]")
+    cons.print("  Não entendi a escolha.")
     return None
 
 
@@ -183,6 +184,21 @@ def console():
 
 def aviso(msg: str) -> None:
     print(msg)
+
+
+def limpar_tela(cons=None) -> None:
+    """Limpa a tela para mostrar uma etapa de cada vez."""
+    (cons or console()).clear()
+
+
+def cabecalho_passo(cons, numero: int, titulo: str) -> None:
+    """Mostra um cabeçalho curto de progresso do fluxo (Passo N de 3)."""
+    cons.print(f"  Passo {numero} de 3: {titulo}\n")
+
+
+def pausa(cons) -> None:
+    """Espera o usuário ler a tela antes de voltar ao menu."""
+    input("\n  Tecle Enter para voltar ao menu...")
 
 
 # ===========================================================================
@@ -331,8 +347,6 @@ def baixar_tudo(itens, destino: Path, simultaneos: int, limite_banda,
                 archive: Path = None) -> None:
     """Baixa a lista de músicas em paralelo (um subprocess por música)."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    from rich.progress import (Progress, SpinnerColumn, TextColumn,
-                               BarColumn, TaskProgressColumn)
 
     archive = archive or ARQUIVO_ARCHIVE
     destino.mkdir(parents=True, exist_ok=True)
@@ -352,49 +366,39 @@ def baixar_tudo(itens, destino: Path, simultaneos: int, limite_banda,
 
     cons = console()
     for titulo in pulados:
-        cons.print(f"  [yellow]Pulado (já existe):[/] {titulo}")
+        cons.print(f"  Esta você já tem: {titulo}")
 
     if not a_baixar:
-        cons.print("\n  [green]Tudo certo! Nada novo para baixar.[/]")
+        cons.print("\n  [green]Você já tem todas essas músicas.[/]")
         return
 
+    total = len(a_baixar)
     concluidos = erros = 0
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        console=cons,
-    ) as prog:
-        tarefa = prog.add_task("Baixando músicas...", total=len(a_baixar))
-        with ThreadPoolExecutor(max_workers=simultaneos) as pool:
-            futuros = {
-                pool.submit(baixar_uma, vid, destino, limite_banda): (vid, titulo)
-                for vid, titulo in a_baixar
-            }
-            for fut in as_completed(futuros):
-                vid, titulo = futuros[fut]
+    with ThreadPoolExecutor(max_workers=simultaneos) as pool:
+        futuros = {}
+        for i, (vid, titulo) in enumerate(a_baixar, start=1):
+            cons.print(f"  Baixando {i} de {total}: {titulo}")
+            futuros[pool.submit(baixar_uma, vid, destino, limite_banda)] = (vid, titulo)
+        for fut in as_completed(futuros):
+            vid, titulo = futuros[fut]
+            try:
+                status = fut.result()
+            except Exception:
+                status = "erro"
+            if status == "concluido":
+                concluidos += 1
                 try:
-                    status = fut.result()
-                except Exception:
-                    status = "erro"
-                if status == "concluido":
-                    concluidos += 1
-                    try:
-                        registrar_baixado(vid, archive)  # uma thread só, sem corrida
-                    except OSError:
-                        pass  # pen-drive pode ter saído; não trava o resto
-                    cons.print(f"  [green]Concluído:[/] {titulo}")
-                else:
-                    erros += 1
-                    cons.print(f"  [red]Erro ao baixar:[/] {titulo}")
-                prog.advance(tarefa)
+                    registrar_baixado(vid, archive)  # uma thread só, sem corrida
+                except OSError:
+                    pass  # pen-drive pode ter saído; não trava o resto
+                cons.print(f"  [green]Pronto:[/] {titulo}")
+            else:
+                erros += 1
+                cons.print(f"  [red]Não consegui baixar:[/] {titulo}")
 
-    cons.print(f"\n  [green]{concluidos} música(s) baixada(s).[/]", end="")
+    cons.print(f"\n  [green]Concluí: {concluidos} música(s).[/]")
     if erros:
-        cons.print(f"  [red]{erros} com erro.[/]")
-    else:
-        cons.print("")
+        cons.print(f"  [red]Não consegui: {erros} música(s).[/]")
 
 
 # ===========================================================================
@@ -413,23 +417,18 @@ def mensagem_final(subpasta: str) -> None:
     )
 
 
-def mensagem_final_pendrive(pendrive: Path) -> None:
+def mensagem_final_pendrive() -> None:
     cons = console()
     cons.print(
-        f"\n  [bold green]Pronto![/] As músicas já estão no pen-drive "
-        f"'[bold]{pendrive.name}[/]', dentro da pasta "
-        f"'[bold]{PASTA_DESTINO_PENDRIVE}[/]'.\n\n"
-        "  Pode tirar o pen-drive com segurança e usar onde quiser.\n"
+        "\n  [green]Pronto![/] Suas músicas já estão salvas no pen-drive.\n"
+        "  Pode tirar o pen-drive com segurança e usar onde quiser."
     )
 
 
 def aviso_cookies() -> None:
-    if not ARQUIVO_COOKIES.exists():
-        cons = console()
-        cons.print(
-            "  [dim](Dica: se algum vídeo pedir login, coloque um arquivo "
-            "'cookies.txt' nesta pasta. Sem ele, baixo normalmente.)[/]"
-        )
+    # O suporte a login por cookies continua funcionando por baixo,
+    # mas nada disso aparece para o usuário.
+    return None
 
 
 def escolher_velocidade() -> tuple[int, str]:
@@ -446,70 +445,86 @@ def escolher_velocidade() -> tuple[int, str]:
 def fluxo_baixar() -> None:
     cons = console()
 
-    # 1) Detectar o pen-drive ANTES de pedir o link (sem usar a memória interna).
-    cons.print("\n  Procurando o pen-drive...")
+    # --- Passo 1 de 3: Conectar o pen-drive --------------------------------
+    limpar_tela(cons)
+    cabecalho_passo(cons, 1, "Conectar o pen-drive")
+    cons.print("  Procurando o pen-drive...\n")
     pendrive = escolher_pendrive(cons)
     if pendrive is None:
         return  # mensagem já mostrada; volta ao menu
 
-    # 2) Testar escrita no pen-drive escolhido.
     if not testar_escrita(pendrive):
-        cons.print("  [red]Não consegui escrever no pen-drive.[/] "
-                   "Tente reconectar pelo adaptador USB.")
+        cons.print("\n  [red]Não consegui salvar no pen-drive.[/] "
+                   "Tire e conecte de novo pelo adaptador USB.")
         return
 
-    # 3) Garantir a pasta MusicasSC na raiz do pen-drive.
+    # A pasta de destino continua sendo criada por baixo, sem aparecer pro usuário.
     destino = pendrive / PASTA_DESTINO_PENDRIVE
     try:
         destino.mkdir(parents=True, exist_ok=True)
     except OSError:
-        cons.print("  [red]Não consegui criar a pasta no pen-drive.[/] "
-                   "Tente reconectar e repetir.")
+        cons.print("\n  [red]Não consegui salvar no pen-drive.[/] "
+                   "Tire e conecte de novo pelo adaptador USB.")
         return
-    archive = destino / ARQUIVO_HISTORICO_PENDRIVE  # histórico de IDs dentro de MusicasSC
+    archive = destino / ARQUIVO_HISTORICO_PENDRIVE
 
-    cons.print(f"  [green]Pen-drive pronto:[/] {pendrive.name} -> "
-               f"{PASTA_DESTINO_PENDRIVE}/")
+    cons.print("\n  [green]Pen-drive conectado![/] Vou salvar as músicas nele.")
+    input("\n  Tecle Enter para continuar...")
 
-    # 4) Pedir o link.
-    url = input("\n  Cole aqui o link do YouTube e tecle Enter: ").strip()
+    # --- Passo 2 de 3: Escolher a música -----------------------------------
+    limpar_tela(cons)
+    cabecalho_passo(cons, 2, "Escolher a música")
+    cons.print('  No YouTube, toque em "Compartilhar" e depois em "Copiar link".')
+    cons.print("  Depois cole aqui e tecle Enter.\n")
+    url = input("  Cole o link: ").strip()
     if not url.startswith("http"):
-        cons.print("  [red]Esse link não parece válido. Tente de novo.[/]")
+        cons.print("\n  [red]Esse link não parece certo.[/] Tente copiar de novo.")
         return
-
-    aviso_cookies()
-    simultaneos, banda = escolher_velocidade()
 
     cons.print("\n  Lendo o link, um momento...")
     # Link de UMA música (mesmo que venha com '&list='): só essa música.
-    # Página de playlist ('playlist?list='): baixa todas, juntas em MusicasSC.
+    # Página de lista de músicas: baixa todas, juntas no pen-drive.
     eh_link_de_musica = ("watch?v=" in url) or ("youtu.be/" in url)
     itens = coletar_itens(url)
     if not itens:
         cons.print(
-            "  [red]Não consegui ler esse link.[/] "
-            "Veja se você está conectado à internet e se o link está certo."
+            "\n  [red]Não consegui abrir esse link.[/] "
+            "Veja se você está na internet e se o link está certo."
         )
         return
     if eh_link_de_musica:
         itens = itens[:1]
 
-    cons.print(f"  Encontrei [bold]{len(itens)}[/] música(s). Começando...\n")
+    # Confirmar antes de baixar.
+    resposta = input(
+        f"\n  Encontrei {len(itens)} música(s). Quer baixar? (digite: sim ou nao) "
+    ).strip().lower()
+    if not resposta.startswith("s"):
+        cons.print("\n  Tudo bem, não vou baixar.")
+        return
+
+    # Tela só para escolher a velocidade.
+    limpar_tela(cons)
+    simultaneos, banda = escolher_velocidade()
+
+    # --- Passo 3 de 3: Baixar ----------------------------------------------
+    limpar_tela(cons)
+    cabecalho_passo(cons, 3, "Baixar")
     try:
         baixar_tudo(itens, destino, simultaneos, banda, archive)
     except KeyboardInterrupt:
-        cons.print("\n  [yellow]Cancelado por você.[/]")
+        cons.print("\n  Você cancelou.")
         return
     except Exception:
-        cons.print("  [red]Algo deu errado durante o download.[/] Tente novamente.")
+        cons.print("\n  [red]Algo deu errado no download.[/] Tente de novo.")
         return
 
-    # Se o pen-drive sumiu no meio, avisa claramente.
+    # Se o pen-drive sumiu no meio, avisa de forma clara.
     if not destino.exists():
-        cons.print("\n  [red]O pen-drive foi removido durante o download.[/] "
-                   "Reconecte e baixe de novo as que faltaram.")
+        cons.print("\n  [red]O pen-drive foi removido no meio do download.[/] "
+                   "Conecte de novo e baixe as que faltaram.")
         return
-    mensagem_final_pendrive(pendrive)
+    mensagem_final_pendrive()
 
 
 def criar_atalho() -> None:
@@ -522,48 +537,43 @@ def criar_atalho() -> None:
     ATALHO.write_text(conteudo, encoding="utf-8")
     ATALHO.chmod(0o700)
     cons.print(
-        f"\n  [green]Atalho criado![/]\n\n"
+        "\n  [green]Atalho criado![/]\n\n"
         "  Para colocar na tela inicial:\n"
-        "   1) Instale o app [bold]Termux:Widget[/] (na loja).\n"
-        "   2) Segure um espaço vazio na tela inicial -> Widgets.\n"
+        "   1) Instale o app Termux:Widget (na loja).\n"
+        "   2) Segure um espaço vazio na tela inicial e escolha Widgets.\n"
         "   3) Escolha o Termux:Widget e toque em 'Baixar-Musica'.\n\n"
-        "  Aí é só um toque para abrir o baixador!\n"
+        "  Aí é só um toque para abrir o baixador!"
     )
 
 
 def fechar_termux() -> None:
-    """Fecha o Termux por completo, para o app não ficar rodando em segundo plano."""
-    import os
-    import signal
+    """Encerra o app de forma normal (sem derrubar o Termux à força)."""
     cons = console()
-    cons.print("  Fechando o aplicativo. Até logo!")
-    try:
-        # Encerra o shell que abriu este programa (a sessão do Termux),
-        # garantindo que nada continue rodando em segundo plano.
-        os.kill(os.getppid(), signal.SIGHUP)
-    except OSError:
-        pass
-    os._exit(0)  # encerra de vez, mesmo se o sinal acima não fechar o terminal
+    cons.print("\n  Até logo!")
+    sys.exit(0)
 
 
 def menu_principal() -> None:
     cons = console()
     while True:
-        cons.print("\n[bold cyan]  Baixador de Música[/]")
-        cons.print("  ────────────────────")
-        cons.print("   [bold]1[/]) Baixar música ou playlist")
-        cons.print("   [bold]2[/]) Criar atalho na tela inicial (widget)")
-        cons.print("   [bold]3[/]) Sair (fecha o Termux por completo)")
+        limpar_tela(cons)
+        cons.print("\n  [bold]Baixador de Música[/]\n")
+        cons.print("   1) Baixar música")
+        cons.print("   2) Criar atalho na tela inicial")
+        cons.print("   3) Sair\n")
         escolha = input("  Digite o número e tecle Enter: ").strip()
         if escolha == "1":
             fluxo_baixar()
+            pausa(cons)
         elif escolha == "2":
             criar_atalho()
+            pausa(cons)
         elif escolha == "3":
             fechar_termux()
             return  # fechar_termux já encerra; mantido por segurança
         else:
-            cons.print("  [yellow]Digite 1, 2 ou 3.[/]")
+            cons.print("\n  Não entendi. Digite 1, 2 ou 3.")
+            pausa(cons)
 
 
 # ===========================================================================

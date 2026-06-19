@@ -1,69 +1,70 @@
 # 🎵 Baixador de Música
 
-Baixe músicas e playlists do YouTube em **MP3** direto no seu **celular Android**, usando o
-app **Termux** — sem precisar de root, sem complicação.
+Baixe músicas do YouTube em **MP3**, direto no seu **pen-drive**, usando o celular Android.
+Simples, em português, feito para qualquer pessoa usar — inclusive quem não tem intimidade
+com tecnologia.
 
-Feito para ser **simples**: menu numerado, tudo em português, pensado para qualquer pessoa usar.
-
-- ✅ Baixa **uma música** ou uma **playlist inteira**
-- ✅ Salva em **MP3 de boa qualidade**, com a **capa** da música embutida
-- ✅ Grava **direto no pen-drive USB**, na pasta `MusicasSC` (sem ocupar a memória do celular)
-- ✅ Não baixa a mesma música duas vezes
-- ✅ Cria um **atalho na tela inicial** (com um toque você abre o baixador)
+O programa conversa com você em **3 passos**, uma pergunta por vez, e salva tudo no pen-drive
+para você ouvir onde quiser (carro, som, computador).
 
 ---
 
-## 📲 Como instalar (passo a passo)
+## ✅ O que ele faz
 
-> Faça isso **uma vez só**. Depois é só usar.
+- Baixa **uma música** ou uma **lista de músicas** do YouTube.
+- Salva em **MP3 de boa qualidade**, com a **capa** da música.
+- Grava **direto no pen-drive** (não enche a memória do celular).
+- **Não baixa repetido**: se você já baixou uma música, ele pula.
+- Cria um **atalho na tela inicial** para abrir com um toque.
+
+---
+
+## 📋 O que você precisa
+
+- Um celular **Android**.
+- O app **Termux** (gratuito).
+- Um **pen-drive** ligado ao celular por um **adaptador USB (OTG)**.
+
+---
+
+## 🚀 Como começar (passo a passo, só uma vez)
 
 ### 1) Instale o Termux
 
-O Termux é um app gratuito. Baixe pela loja **F-Droid** (recomendado) ou pela Play Store:
+Baixe o **Termux** pela loja **F-Droid** (recomendado):
 
-- F-Droid: https://f-droid.org/packages/com.termux/
+- https://f-droid.org/packages/com.termux/
 
-> ⚠️ A versão da Play Store é antiga e pode dar erro. Prefira a do **F-Droid**.
+> ⚠️ A versão da Play Store é antiga e pode falhar. Prefira a do **F-Droid**.
 
-### 2) Abra o Termux e atualize
+### 2) Prepare o Termux
 
-Digite estas duas linhas (uma de cada vez) e tecle **Enter**:
+Abra o Termux e digite estas linhas (uma de cada vez, teclando **Enter**):
 
 ```bash
 pkg update -y
 pkg install -y python git
-```
-
-### 3) Libere o acesso à memória do celular
-
-Digite:
-
-```bash
 termux-setup-storage
 ```
 
-Vai aparecer uma janela do Android — toque em **Permitir**.
+Quando aparecer a janela do Android, toque em **Permitir**.
 
-### 4) Baixe este programa
+### 3) Baixe e abra o programa
 
 ```bash
 git clone https://github.com/ayatotenshipj-boop/BaixadorDeMusica.git
 cd BaixadorDeMusica
-```
-
-### 5) Abra o baixador
-
-```bash
 python baixador.py
 ```
 
-Na **primeira vez**, ele instala sozinho o que falta (pode demorar um pouco). Pronto! 🎉
+Na primeira vez, ele instala sozinho o que falta (pode demorar um pouco). Pronto! 🎉
 
 ---
 
 ## ▶️ Como usar no dia a dia
 
-1. Abra o Termux e digite:
+1. Conecte o **pen-drive** no celular pelo adaptador USB.
+2. Abra o Termux e digite:
 
    ```bash
    cd BaixadorDeMusica
@@ -72,111 +73,60 @@ Na **primeira vez**, ele instala sozinho o que falta (pode demorar um pouco). Pr
 
    *(ou use o atalho na tela inicial — veja abaixo)*
 
-2. Aparece o menu:
+3. No menu, digite **1** (Baixar música). O programa segue **3 passos**:
 
-   ```
-     Baixador de Música
-     ────────────────────
-      1) Baixar música ou playlist
-      2) Criar atalho na tela inicial (widget)
-      3) Sair (fecha o Termux por completo)
-   ```
+   - **Passo 1 — Conectar o pen-drive:** ele encontra o pen-drive sozinho.
+   - **Passo 2 — Escolher a música:** cole o link do YouTube. Ele conta quantas
+     músicas achou e **pergunta se você quer baixar** (responda **sim** ou **nao**).
+   - **Passo 3 — Baixar:** ele baixa e mostra cada música ficando pronta.
 
-   > A opção **3** fecha o Termux inteiro — assim o app não fica rodando em
-   > segundo plano gastando bateria depois que você termina.
+4. No final, é só **tirar o pen-drive** e usar onde quiser.
 
-3. **Conecte o pen-drive** no celular pelo adaptador USB (OTG) **antes** de começar.
-4. Digite **1** e tecle Enter.
-5. O programa **procura o pen-drive** sozinho:
-   - Se achar **um**, usa ele.
-   - Se achar **vários**, mostra uma lista numerada para você escolher.
-   - Se **não achar nenhum**, avisa para conectar o pen-drive e voltar.
-6. **Cole o link** do YouTube (música ou playlist) e tecle Enter.
-7. Escolha a **velocidade** (Rápido / Médio / Lento).
-8. Espere terminar. As músicas vão **direto para o pen-drive**, na pasta `MusicasSC`.
-   Quando acabar, pode tirar o pen-drive e usar onde quiser.
+> 💡 Para copiar o link no YouTube: toque em **Compartilhar** e depois em **Copiar link**.
 
 ---
 
-## 🔗 Atalho na tela inicial (opcional, recomendado)
+## 🔗 Atalho na tela inicial (opcional)
 
-Para abrir o baixador com **um toque**, sem digitar nada:
+Para abrir o baixador com **um toque**:
 
 1. No menu, escolha a opção **2** (Criar atalho).
 2. Instale o app **Termux:Widget**:
-   - F-Droid: https://f-droid.org/packages/com.termux.widget/
-3. Na tela inicial do celular, segure um espaço vazio → **Widgets** → escolha **Termux:Widget**.
-4. Toque em **Baixar-Musica**. Pronto, abre o baixador na hora!
-
----
-
-## 📁 Onde ficam as músicas
-
-Tudo vai **direto para o pen-drive**, dentro de uma pasta chamada **`MusicasSC`**
-(criada automaticamente na primeira vez). Nada fica na memória do celular.
-
-```
-Pen-drive
-└── MusicasSC
-    ├── Música 1.mp3
-    ├── Música 2.mp3
-    └── ... (todas as músicas e playlists)
-```
-
-Como já está tudo no pen-drive, é só **tirar o pen-drive** e plugar no computador,
-som do carro, caixa de som etc.
-
-> ℹ️ O pen-drive precisa estar acessível ao Termux em `/mnt/media_rw/...`. Em alguns
-> aparelhos/versões do Android isso exige permissão especial. Se o programa disser que
-> não encontrou o pen-drive mesmo conectado, veja a tabela de **Problemas comuns**.
-
----
-
-## 🔐 Vídeos que pedem login (cookies — opcional)
-
-Quase tudo baixa normalmente sem isso. Mas se **algum** vídeo exigir login:
-
-1. No computador, exporte um arquivo `cookies.txt` (formato Netscape) do seu navegador
-   logado no YouTube (existem extensões gratuitas para isso).
-2. Coloque o `cookies.txt` **dentro da pasta** `BaixadorDeMusica`.
-3. Rode o baixador normalmente — ele usa o arquivo automaticamente.
-
-> O `cookies.txt` é pessoal. **Nunca** envie esse arquivo para ninguém nem para o GitHub
-> (este projeto já o ignora no `.gitignore`).
+   - https://f-droid.org/packages/com.termux.widget/
+3. Na tela inicial, segure um espaço vazio, escolha **Widgets** e adicione o **Termux:Widget**.
+4. Toque em **Baixar-Musica**. Pronto!
 
 ---
 
 ## ❓ Problemas comuns
 
-| Mensagem / problema | O que fazer |
+| O que apareceu | O que fazer |
 |---|---|
-| "Nenhum pen-drive encontrado" | Conecte o pen-drive pelo adaptador USB (OTG) e tente de novo. Veja se o adaptador funciona |
-| "Não consegui escrever no pen-drive" | Reconecte o pen-drive. Se persistir, ele pode estar protegido ou com problema |
-| "O pen-drive foi removido durante o download" | Reconecte e baixe de novo as que faltaram (as já baixadas não repetem) |
-| "preciso de acesso à memória" | Rode `termux-setup-storage`, toque em **Permitir**, abra de novo |
-| "Não consegui ler esse link" | Veja se está na internet e se o link está correto |
-| Instalação travou | Feche e abra o Termux, rode `python baixador.py` de novo |
-| `python: command not found` | Rode `pkg install -y python` |
+| "Nenhum pen-drive encontrado" | Conecte o pen-drive pelo adaptador USB e tente de novo |
+| "Não consegui salvar no pen-drive" | Tire e conecte o pen-drive de novo |
+| "O pen-drive foi removido no meio do download" | Conecte de novo e baixe as que faltaram (as prontas não repetem) |
+| "Esse link não parece certo" | Copie o link de novo pelo botão **Compartilhar** do YouTube |
+| `python: command not found` | Digite `pkg install -y python` |
 
 ---
 
 ## 🛠️ Para desenvolvedores
 
-Arquivo principal único: **`baixador.py`** (Python 3, sem dependências exóticas).
+Arquivo principal único: **`baixador.py`** (Python 3, `pathlib`, sem `os.path`).
 
 **Motor:** [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) + `ffmpeg` · **Interface:** [`rich`](https://github.com/Textualize/rich)
 
 **Como funciona, resumido:**
-- **Destino no pen-drive:** a opção *Baixar música* detecta os pen-drives lendo `/proc/mounts`
-  (volumes em `/mnt/media_rw/<UUID>` com fs `vfat|exfat|ntfs|fuseblk`), testa escrita, cria a
-  pasta `MusicasSC` na raiz e grava todos os `.mp3` direto lá — sem passar pela memória interna.
+- **Destino no pen-drive:** detecta volumes em `/mnt/media_rw/<UUID>` (fs `vfat|exfat|ntfs|fuseblk`)
+  lendo `/proc/mounts`, testa escrita e grava os `.mp3` numa pasta `MusicasSC` na raiz do
+  dispositivo (esse nome e caminho não são mostrados ao usuário).
 - Um **subprocess** de `yt-dlp` por música; pool limitado (3/4/5 simultâneas conforme a velocidade).
 - **Sem downloads repetidos** em dois níveis: histórico de IDs (`MusicasSC/.download_archive.txt`,
-  escrito por uma única thread para evitar corrida) + comparação de nome por similaridade
-  (`difflib`, limiar 0.85) contra os `.mp3` já presentes em `MusicasSC`.
+  escrito por uma única thread) + comparação de nome por similaridade (`difflib`, limiar 0.85).
+- **Login por cookies (opcional):** se existir um `cookies.txt` na pasta do app, ele é usado
+  automaticamente; nada disso aparece na interface.
 - Segurança: nenhuma chamada usa `shell=True`; IDs de vídeo são validados (`^[A-Za-z0-9_-]{11}$`)
-  e URLs passam após `--` para evitar injeção de argumento. Usa **só** a permissão de
-  armazenamento padrão do Termux — **sem root**.
+  e URLs passam após `--`. Usa **só** a permissão de armazenamento padrão do Termux — **sem root**.
 
 **Rodar os testes:**
 
