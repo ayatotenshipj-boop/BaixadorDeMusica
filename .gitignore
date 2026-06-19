@@ -1,0 +1,11 @@
+# Dados gerados em uso — nunca versionar
+baixados.txt
+cookies.txt
+
+# Cache do Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Sistema
+.DS_Store
