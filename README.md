@@ -79,8 +79,11 @@ Na **primeira vez**, ele instala sozinho o que falta (pode demorar um pouco). Pr
      ────────────────────
       1) Baixar música ou playlist
       2) Criar atalho na tela inicial (widget)
-      3) Sair
+      3) Sair (fecha o Termux por completo)
    ```
+
+   > A opção **3** fecha o Termux inteiro — assim o app não fica rodando em
+   > segundo plano gastando bateria depois que você termina.
 
 3. **Conecte o pen-drive** no celular pelo adaptador USB (OTG) **antes** de começar.
 4. Digite **1** e tecle Enter.

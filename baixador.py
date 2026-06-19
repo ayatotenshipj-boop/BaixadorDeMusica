@@ -531,6 +531,21 @@ def criar_atalho() -> None:
     )
 
 
+def fechar_termux() -> None:
+    """Fecha o Termux por completo, para o app não ficar rodando em segundo plano."""
+    import os
+    import signal
+    cons = console()
+    cons.print("  Fechando o aplicativo. Até logo!")
+    try:
+        # Encerra o shell que abriu este programa (a sessão do Termux),
+        # garantindo que nada continue rodando em segundo plano.
+        os.kill(os.getppid(), signal.SIGHUP)
+    except OSError:
+        pass
+    os._exit(0)  # encerra de vez, mesmo se o sinal acima não fechar o terminal
+
+
 def menu_principal() -> None:
     cons = console()
     while True:
@@ -538,15 +553,15 @@ def menu_principal() -> None:
         cons.print("  ────────────────────")
         cons.print("   [bold]1[/]) Baixar música ou playlist")
         cons.print("   [bold]2[/]) Criar atalho na tela inicial (widget)")
-        cons.print("   [bold]3[/]) Sair")
+        cons.print("   [bold]3[/]) Sair (fecha o Termux por completo)")
         escolha = input("  Digite o número e tecle Enter: ").strip()
         if escolha == "1":
             fluxo_baixar()
         elif escolha == "2":
             criar_atalho()
         elif escolha == "3":
-            cons.print("  Até logo!")
-            return
+            fechar_termux()
+            return  # fechar_termux já encerra; mantido por segurança
         else:
             cons.print("  [yellow]Digite 1, 2 ou 3.[/]")
 
