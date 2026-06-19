@@ -7,7 +7,7 @@ Feito para ser **simples**: menu numerado, tudo em português, pensado para qual
 
 - ✅ Baixa **uma música** ou uma **playlist inteira**
 - ✅ Salva em **MP3 de boa qualidade**, com a **capa** da música embutida
-- ✅ Organiza tudo na pasta **Música** do celular
+- ✅ Grava **direto no pen-drive USB**, na pasta `MusicasSC` (sem ocupar a memória do celular)
 - ✅ Não baixa a mesma música duas vezes
 - ✅ Cria um **atalho na tela inicial** (com um toque você abre o baixador)
 
@@ -82,10 +82,16 @@ Na **primeira vez**, ele instala sozinho o que falta (pode demorar um pouco). Pr
       3) Sair
    ```
 
-3. Digite **1** e tecle Enter.
-4. **Cole o link** do YouTube (música ou playlist) e tecle Enter.
-5. Escolha a **velocidade** (Rápido / Médio / Lento).
-6. Espere terminar. As músicas vão para a pasta **Música** do celular.
+3. **Conecte o pen-drive** no celular pelo adaptador USB (OTG) **antes** de começar.
+4. Digite **1** e tecle Enter.
+5. O programa **procura o pen-drive** sozinho:
+   - Se achar **um**, usa ele.
+   - Se achar **vários**, mostra uma lista numerada para você escolher.
+   - Se **não achar nenhum**, avisa para conectar o pen-drive e voltar.
+6. **Cole o link** do YouTube (música ou playlist) e tecle Enter.
+7. Escolha a **velocidade** (Rápido / Médio / Lento).
+8. Espere terminar. As músicas vão **direto para o pen-drive**, na pasta `MusicasSC`.
+   Quando acabar, pode tirar o pen-drive e usar onde quiser.
 
 ---
 
@@ -103,18 +109,23 @@ Para abrir o baixador com **um toque**, sem digitar nada:
 
 ## 📁 Onde ficam as músicas
 
-Tudo vai para a pasta **Música** do celular, organizado:
+Tudo vai **direto para o pen-drive**, dentro de uma pasta chamada **`MusicasSC`**
+(criada automaticamente na primeira vez). Nada fica na memória do celular.
 
-| O que você baixou | Onde fica |
-|---|---|
-| Uma música | `Música / Baixados /` |
-| Uma playlist | `Música / <nome da playlist> /` |
+```
+Pen-drive
+└── MusicasSC
+    ├── Música 1.mp3
+    ├── Música 2.mp3
+    └── ... (todas as músicas e playlists)
+```
 
-### Passar para um pendrive (USB)
+Como já está tudo no pen-drive, é só **tirar o pen-drive** e plugar no computador,
+som do carro, caixa de som etc.
 
-1. Abra o gerenciador de arquivos do celular (ex.: **Meus Arquivos**).
-2. Conecte o pendrive pelo adaptador (OTG).
-3. Entre na pasta **Música**, selecione a pasta desejada e use **Copiar → Pendrive**.
+> ℹ️ O pen-drive precisa estar acessível ao Termux em `/mnt/media_rw/...`. Em alguns
+> aparelhos/versões do Android isso exige permissão especial. Se o programa disser que
+> não encontrou o pen-drive mesmo conectado, veja a tabela de **Problemas comuns**.
 
 ---
 
@@ -136,6 +147,9 @@ Quase tudo baixa normalmente sem isso. Mas se **algum** vídeo exigir login:
 
 | Mensagem / problema | O que fazer |
 |---|---|
+| "Nenhum pen-drive encontrado" | Conecte o pen-drive pelo adaptador USB (OTG) e tente de novo. Veja se o adaptador funciona |
+| "Não consegui escrever no pen-drive" | Reconecte o pen-drive. Se persistir, ele pode estar protegido ou com problema |
+| "O pen-drive foi removido durante o download" | Reconecte e baixe de novo as que faltaram (as já baixadas não repetem) |
 | "preciso de acesso à memória" | Rode `termux-setup-storage`, toque em **Permitir**, abra de novo |
 | "Não consegui ler esse link" | Veja se está na internet e se o link está correto |
 | Instalação travou | Feche e abra o Termux, rode `python baixador.py` de novo |
@@ -150,9 +164,13 @@ Arquivo principal único: **`baixador.py`** (Python 3, sem dependências exótic
 **Motor:** [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) + `ffmpeg` · **Interface:** [`rich`](https://github.com/Textualize/rich)
 
 **Como funciona, resumido:**
+- **Destino no pen-drive:** a opção *Baixar música* detecta os pen-drives lendo `/proc/mounts`
+  (volumes em `/mnt/media_rw/<UUID>` com fs `vfat|exfat|ntfs|fuseblk`), testa escrita, cria a
+  pasta `MusicasSC` na raiz e grava todos os `.mp3` direto lá — sem passar pela memória interna.
 - Um **subprocess** de `yt-dlp` por música; pool limitado (3/4/5 simultâneas conforme a velocidade).
-- **Sem downloads repetidos** em dois níveis: histórico de IDs (`baixados.txt`) + comparação de
-  nome por similaridade (`difflib`, limiar 0.85).
+- **Sem downloads repetidos** em dois níveis: histórico de IDs (`MusicasSC/.download_archive.txt`,
+  escrito por uma única thread para evitar corrida) + comparação de nome por similaridade
+  (`difflib`, limiar 0.85) contra os `.mp3` já presentes em `MusicasSC`.
 - Segurança: nenhuma chamada usa `shell=True`; IDs de vídeo são validados (`^[A-Za-z0-9_-]{11}$`)
   e URLs passam após `--` para evitar injeção de argumento. Usa **só** a permissão de
   armazenamento padrão do Termux — **sem root**.
