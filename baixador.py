@@ -27,6 +27,11 @@ ATALHO = Path.home() / ".shortcuts" / "Baixar-Musica.sh"
 
 LIMIAR_SIMILARIDADE = 0.85                             # nome "parecido" = duplicata
 
+PASTA_DESTINO_PENDRIVE = "MusicasSC"                   # subpasta criada na raiz do pen-drive
+ARQUIVO_HISTORICO_PENDRIVE = ".download_archive.txt"  # histórico de IDs dentro de MusicasSC
+# Sistemas de arquivos típicos de pen-drive USB.
+FS_PENDRIVE = {"vfat", "exfat", "ntfs", "fuseblk"}
+
 # Velocidade escolhida -> (downloads simultâneos, limite de banda ou None)
 VELOCIDADES = {
     "1": ("Rápido", 5, None),
@@ -91,22 +96,79 @@ def id_valido(video_id: str) -> bool:
     return bool(_ID_VALIDO.match(video_id))
 
 
-def ids_ja_baixados() -> set[str]:
-    """Lê o arquivo central de histórico e devolve os IDs já baixados (dedup exato)."""
-    if not ARQUIVO_ARCHIVE.exists():
+def ids_ja_baixados(archive: Path = None) -> set[str]:
+    """Lê o arquivo de histórico e devolve os IDs já baixados (dedup exato)."""
+    archive = archive or ARQUIVO_ARCHIVE
+    if not archive.exists():
         return set()
     ids = set()
-    for linha in ARQUIVO_ARCHIVE.read_text(encoding="utf-8").splitlines():
+    for linha in archive.read_text(encoding="utf-8").splitlines():
         partes = linha.split()
         if partes:
             ids.add(partes[-1])  # formato "youtube <id>"
     return ids
 
 
-def registrar_baixado(video_id: str) -> None:
-    """Anota um ID no histórico central. Chamado por UMA thread só (sem corrida)."""
-    with ARQUIVO_ARCHIVE.open("a", encoding="utf-8") as f:
+def registrar_baixado(video_id: str, archive: Path = None) -> None:
+    """Anota um ID no histórico. Chamado por UMA thread só (sem corrida)."""
+    archive = archive or ARQUIVO_ARCHIVE
+    with archive.open("a", encoding="utf-8") as f:
         f.write(f"youtube {video_id}\n")
+
+
+# ===========================================================================
+# Pen-drive (USB OTG)
+# ===========================================================================
+
+def detectar_pendrives() -> list[Path]:
+    """Procura pen-drives montados em /mnt/media_rw/<UUID> lendo /proc/mounts."""
+    montagens = Path("/proc/mounts")
+    if not montagens.exists():
+        return []
+    encontrados = []
+    for linha in montagens.read_text(encoding="utf-8", errors="ignore").splitlines():
+        partes = linha.split()
+        if len(partes) < 3:
+            continue
+        ponto, sistema = partes[1], partes[2]
+        # /proc/mounts escapa espaços como \040; desfaz para virar caminho real.
+        ponto = ponto.replace("\\040", " ")
+        if ponto.startswith("/mnt/media_rw/") and sistema in FS_PENDRIVE:
+            encontrados.append(Path(ponto))
+    return encontrados
+
+
+def escolher_pendrive(cons) -> Path | None:
+    """Detecta os pen-drives e, se houver vários, deixa o usuário escolher."""
+    drives = detectar_pendrives()
+    if not drives:
+        cons.print(
+            "  [red]Nenhum pen-drive encontrado.[/] "
+            "Conecte pelo adaptador USB e tente de novo."
+        )
+        return None
+    if len(drives) == 1:
+        return drives[0]
+
+    cons.print("\n  Encontrei mais de um pen-drive. Qual você quer usar?")
+    for i, d in enumerate(drives, start=1):
+        cons.print(f"   [bold]{i}[/]) {d.name}")
+    escolha = input("  Digite o número e tecle Enter: ").strip()
+    if escolha.isdigit() and 1 <= int(escolha) <= len(drives):
+        return drives[int(escolha) - 1]
+    cons.print("  [yellow]Opção inválida.[/]")
+    return None
+
+
+def testar_escrita(raiz: Path) -> bool:
+    """Confere se dá para escrever no pen-drive criando e apagando um arquivo de teste."""
+    teste = raiz / ".write_test"
+    try:
+        teste.touch()
+        teste.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
 
 
 # ===========================================================================
@@ -265,15 +327,17 @@ def baixar_uma(video_id: str, destino: Path, limite_banda) -> str:
 # Orquestração com barra de progresso
 # ===========================================================================
 
-def baixar_tudo(itens, destino: Path, simultaneos: int, limite_banda) -> None:
+def baixar_tudo(itens, destino: Path, simultaneos: int, limite_banda,
+                archive: Path = None) -> None:
     """Baixa a lista de músicas em paralelo (um subprocess por música)."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from rich.progress import (Progress, SpinnerColumn, TextColumn,
                                BarColumn, TaskProgressColumn)
 
+    archive = archive or ARQUIVO_ARCHIVE
     destino.mkdir(parents=True, exist_ok=True)
-    existentes = mp3s_normalizados(destino)
-    ja_baixados = ids_ja_baixados()  # dedup exato pelo ID do YouTube
+    existentes = mp3s_normalizados(destino)        # dedup por nome: só o que já está aqui
+    ja_baixados = ids_ja_baixados(archive)         # dedup exato pelo ID do YouTube
 
     # Separa o que vai baixar do que já existe (ID igual OU nome parecido).
     a_baixar, pulados = [], []
@@ -316,7 +380,10 @@ def baixar_tudo(itens, destino: Path, simultaneos: int, limite_banda) -> None:
                     status = "erro"
                 if status == "concluido":
                     concluidos += 1
-                    registrar_baixado(vid)  # grava no histórico (uma thread só, sem corrida)
+                    try:
+                        registrar_baixado(vid, archive)  # uma thread só, sem corrida
+                    except OSError:
+                        pass  # pen-drive pode ter saído; não trava o resto
                     cons.print(f"  [green]Concluído:[/] {titulo}")
                 else:
                     erros += 1
@@ -346,6 +413,16 @@ def mensagem_final(subpasta: str) -> None:
     )
 
 
+def mensagem_final_pendrive(pendrive: Path) -> None:
+    cons = console()
+    cons.print(
+        f"\n  [bold green]Pronto![/] As músicas já estão no pen-drive "
+        f"'[bold]{pendrive.name}[/]', dentro da pasta "
+        f"'[bold]{PASTA_DESTINO_PENDRIVE}[/]'.\n\n"
+        "  Pode tirar o pen-drive com segurança e usar onde quiser.\n"
+    )
+
+
 def aviso_cookies() -> None:
     if not ARQUIVO_COOKIES.exists():
         cons = console()
@@ -368,6 +445,33 @@ def escolher_velocidade() -> tuple[int, str]:
 
 def fluxo_baixar() -> None:
     cons = console()
+
+    # 1) Detectar o pen-drive ANTES de pedir o link (sem usar a memória interna).
+    cons.print("\n  Procurando o pen-drive...")
+    pendrive = escolher_pendrive(cons)
+    if pendrive is None:
+        return  # mensagem já mostrada; volta ao menu
+
+    # 2) Testar escrita no pen-drive escolhido.
+    if not testar_escrita(pendrive):
+        cons.print("  [red]Não consegui escrever no pen-drive.[/] "
+                   "Tente reconectar pelo adaptador USB.")
+        return
+
+    # 3) Garantir a pasta MusicasSC na raiz do pen-drive.
+    destino = pendrive / PASTA_DESTINO_PENDRIVE
+    try:
+        destino.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        cons.print("  [red]Não consegui criar a pasta no pen-drive.[/] "
+                   "Tente reconectar e repetir.")
+        return
+    archive = destino / ARQUIVO_HISTORICO_PENDRIVE  # histórico de IDs dentro de MusicasSC
+
+    cons.print(f"  [green]Pen-drive pronto:[/] {pendrive.name} -> "
+               f"{PASTA_DESTINO_PENDRIVE}/")
+
+    # 4) Pedir o link.
     url = input("\n  Cole aqui o link do YouTube e tecle Enter: ").strip()
     if not url.startswith("http"):
         cons.print("  [red]Esse link não parece válido. Tente de novo.[/]")
@@ -378,7 +482,7 @@ def fluxo_baixar() -> None:
 
     cons.print("\n  Lendo o link, um momento...")
     # Link de UMA música (mesmo que venha com '&list='): só essa música.
-    # Página de playlist ('playlist?list='): baixa todas.
+    # Página de playlist ('playlist?list='): baixa todas, juntas em MusicasSC.
     eh_link_de_musica = ("watch?v=" in url) or ("youtu.be/" in url)
     itens = coletar_itens(url)
     if not itens:
@@ -387,26 +491,25 @@ def fluxo_baixar() -> None:
             "Veja se você está conectado à internet e se o link está certo."
         )
         return
-
     if eh_link_de_musica:
-        sub = "Baixados"
         itens = itens[:1]
-    elif len(itens) > 1:
-        sub = nome_playlist(url)
-    else:
-        sub = "Baixados"
-    destino = PASTA_MUSICA / sub
 
     cons.print(f"  Encontrei [bold]{len(itens)}[/] música(s). Começando...\n")
     try:
-        baixar_tudo(itens, destino, simultaneos, banda)
+        baixar_tudo(itens, destino, simultaneos, banda, archive)
     except KeyboardInterrupt:
         cons.print("\n  [yellow]Cancelado por você.[/]")
         return
     except Exception:
         cons.print("  [red]Algo deu errado durante o download.[/] Tente novamente.")
         return
-    mensagem_final(sub)
+
+    # Se o pen-drive sumiu no meio, avisa claramente.
+    if not destino.exists():
+        cons.print("\n  [red]O pen-drive foi removido durante o download.[/] "
+                   "Reconecte e baixe de novo as que faltaram.")
+        return
+    mensagem_final_pendrive(pendrive)
 
 
 def criar_atalho() -> None:
