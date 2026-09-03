@@ -1,11 +1,6 @@
-# Dados gerados em uso — nunca versionar
-baixados.txt
-cookies.txt
-
-# Cache do Python
 __pycache__/
-*.pyc
 .pytest_cache/
-
-# Sistema
-.DS_Store
+*.pyc
+cookies.txt
+baixados.txt
+.ultima_atualizacao_yt_dlp
