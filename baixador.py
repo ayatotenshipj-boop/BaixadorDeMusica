@@ -1,64 +1,48 @@
 #!/data/data/com.termux/files/usr/bin/python
 # -*- coding: utf-8 -*-
-"""
-Baixador de Música — YouTube para MP3 no Termux (Android, sem root).
+"""Baixador de Música — YouTube para MP3 no Termux (Android, sem root)."""
 
-Interface simples em português, pensada para qualquer pessoa usar.
-Use SOMENTE a permissão de armazenamento padrão do Termux.
-"""
+from __future__ import annotations
 
 import re
-import sys
 import shutil
 import subprocess
+import sys
+import time
 import unicodedata
-from difflib import SequenceMatcher
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
-# ---------------------------------------------------------------------------
-# Configurações gerais
-# ---------------------------------------------------------------------------
-
-PASTA_APP = Path(__file__).resolve().parent          # onde mora este script
-ARQUIVO_ARCHIVE = PASTA_APP / "baixados.txt"          # IDs já baixados (yt-dlp)
-ARQUIVO_COOKIES = PASTA_APP / "cookies.txt"           # opcional, formato Netscape
-PASTA_MUSICA = Path.home() / "storage" / "music"      # pasta padrão do celular
+PASTA_APP = Path(__file__).resolve().parent
+ARQUIVO_COOKIES = PASTA_APP / "cookies.txt"
+ARQUIVO_ATUALIZACAO = PASTA_APP / ".ultima_atualizacao_yt_dlp"
 ATALHO = Path.home() / ".shortcuts" / "Baixar-Musica.sh"
 
-LIMIAR_SIMILARIDADE = 0.85                             # nome "parecido" = duplicata
+PASTA_DESTINO_PENDRIVE = "MusicasSC"
+ARQUIVO_HISTORICO_PENDRIVE = ".download_archive.txt"
+FS_PENDRIVE = {"vfat", "exfat", "ntfs", "fuseblk", "msdos", "ext4", "f2fs"}
+INTERVALO_ATUALIZACAO = 7 * 24 * 60 * 60
 
-PASTA_DESTINO_PENDRIVE = "MusicasSC"                   # subpasta criada na raiz do pen-drive
-ARQUIVO_HISTORICO_PENDRIVE = ".download_archive.txt"  # histórico de IDs dentro de MusicasSC
-# Sistemas de arquivos típicos de pen-drive USB.
-FS_PENDRIVE = {"vfat", "exfat", "ntfs", "fuseblk"}
-
-# Velocidade escolhida -> (downloads simultâneos, limite de banda ou None)
 VELOCIDADES = {
-    "1": ("Rápido", 5, None),
-    "2": ("Médio", 4, None),
-    "3": ("Lento", 3, "2M"),
+    "1": ("Rápido", 4, None),
+    "2": ("Médio", 3, None),
+    "3": ("Lento", 2, "2M"),
 }
 
-# ID de vídeo do YouTube válido (11 caracteres). Evita "injeção de argumento" no yt-dlp.
 _ID_VALIDO = re.compile(r"^[A-Za-z0-9_-]{11}$")
-
-# Trechos de ruído removidos ao comparar títulos.
 _RUIDO = re.compile(
-    r"\([^()]*\)|\[[^\[\]]*\]"                         # (...) e [...]
+    r"\([^()]*\)|\[[^\[\]]*\]"
     r"|\b(?:official|video|lyric[s]?|audio|hd|4k|mv|oficial)\b",
     re.IGNORECASE,
 )
+_HOSTS_YOUTUBE = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"}
 
 
-# ===========================================================================
-# Funções puras (testáveis) — normalização e deduplicação
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# Funções puras
+# ---------------------------------------------------------------------------
 
 def normalizar_titulo(titulo: str) -> str:
-    """Minúsculas, sem acentos, sem (…)/[…]/ruído e sem pontuação.
-
-    Usada para comparar títulos de música e detectar duplicatas por nome.
-    """
     txt = unicodedata.normalize("NFKD", titulo)
     txt = txt.encode("ascii", "ignore").decode("ascii")
     txt = _RUIDO.sub(" ", txt)
@@ -67,91 +51,329 @@ def normalizar_titulo(titulo: str) -> str:
 
 
 def eh_duplicata(titulo: str, normalizados_existentes: list[str]) -> bool:
-    """True se o título for igual ou muito parecido (>= 0.85) com algo já baixado."""
+    """Evita falsos positivos: só considera duplicata quando o título normalizado coincide."""
     alvo = normalizar_titulo(titulo)
-    if not alvo:
-        return False
-    for existente in normalizados_existentes:
-        if SequenceMatcher(None, alvo, existente).ratio() >= LIMIAR_SIMILARIDADE:
-            return True
-    return False
+    return bool(alvo) and alvo in normalizados_existentes
 
 
 def nome_pasta_seguro(nome: str) -> str:
-    """Transforma o nome da playlist em um nome de pasta válido no Android."""
     limpo = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", nome)
     limpo = re.sub(r"\s+", " ", limpo).strip(" ._")
     return limpo[:80] if limpo else "Playlist"
 
 
 def mp3s_normalizados(destino: Path) -> list[str]:
-    """Lista os títulos já presentes na pasta (normalizados) para comparação."""
     if not destino.exists():
         return []
     return [normalizar_titulo(p.stem) for p in destino.glob("*.mp3")]
 
 
 def id_valido(video_id: str) -> bool:
-    """True se o ID tem o formato esperado do YouTube (11 caracteres seguros)."""
-    return bool(_ID_VALIDO.match(video_id))
+    return bool(_ID_VALIDO.fullmatch(video_id or ""))
 
 
-def ids_ja_baixados(archive: Path = None) -> set[str]:
-    """Lê o arquivo de histórico e devolve os IDs já baixados (dedup exato)."""
-    archive = archive or ARQUIVO_ARCHIVE
+def ids_ja_baixados(archive: Path) -> set[str]:
     if not archive.exists():
         return set()
-    ids = set()
-    for linha in archive.read_text(encoding="utf-8").splitlines():
+    ids: set[str] = set()
+    try:
+        linhas = archive.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return set()
+    for linha in linhas:
         partes = linha.split()
-        if partes:
-            ids.add(partes[-1])  # formato "youtube <id>"
+        if partes and id_valido(partes[-1]):
+            ids.add(partes[-1])
     return ids
 
 
-def registrar_baixado(video_id: str, archive: Path = None) -> None:
-    """Anota um ID no histórico. Chamado por UMA thread só (sem corrida)."""
-    archive = archive or ARQUIVO_ARCHIVE
+def registrar_baixado(video_id: str, archive: Path) -> None:
+    if not id_valido(video_id):
+        return
     with archive.open("a", encoding="utf-8") as f:
         f.write(f"youtube {video_id}\n")
 
 
-# ===========================================================================
-# Pen-drive (USB OTG)
-# ===========================================================================
+def classificar_url_youtube(url: str) -> tuple[str, str] | None:
+    """Retorna ('video'|'playlist', URL canônica) ou None.
+
+    Um link watch com &list= continua sendo tratado como o vídeo selecionado,
+    evitando baixar a playlist inteira e depois escolher o primeiro item errado.
+    """
+    try:
+        parsed = urlparse(url.strip())
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"}:
+        return None
+
+    host = parsed.netloc.lower().split(":", 1)[0]
+    if host == "youtu.be":
+        vid = parsed.path.strip("/").split("/", 1)[0]
+        return ("video", f"https://www.youtube.com/watch?v={vid}") if id_valido(vid) else None
+
+    if host not in _HOSTS_YOUTUBE:
+        return None
+
+    query = parse_qs(parsed.query)
+    path = parsed.path.rstrip("/")
+
+    if path == "/watch":
+        vid = query.get("v", [""])[0]
+        if id_valido(vid):
+            return "video", f"https://www.youtube.com/watch?v={vid}"
+
+    for prefix in ("/shorts/", "/live/", "/embed/"):
+        if path.startswith(prefix):
+            vid = path[len(prefix):].split("/", 1)[0]
+            if id_valido(vid):
+                return "video", f"https://www.youtube.com/watch?v={vid}"
+
+    playlist_id = query.get("list", [""])[0]
+    if path == "/playlist" and playlist_id:
+        return "playlist", f"https://www.youtube.com/playlist?list={playlist_id}"
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Interface
+# ---------------------------------------------------------------------------
+
+def console():
+    from rich.console import Console
+    return Console()
+
+
+def aviso(msg: str) -> None:
+    print(msg)
+
+
+def limpar_tela(cons=None) -> None:
+    (cons or console()).clear()
+
+
+def cabecalho_passo(cons, numero: int, titulo: str) -> None:
+    cons.print(f"  Passo {numero} de 3: {titulo}\n")
+
+
+def pausa(cons) -> None:
+    input("\n  Tecle Enter para voltar ao menu...")
+
+
+# ---------------------------------------------------------------------------
+# Dependências e yt-dlp moderno (EJS + runtime JS)
+# ---------------------------------------------------------------------------
+
+def _instalar(args: list[str]) -> bool:
+    try:
+        subprocess.run(args, check=True)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return False
+
+
+def _modulo_existe(nome: str) -> bool:
+    try:
+        __import__(nome)
+        return True
+    except ImportError:
+        return False
+
+
+def _versao_comando(executavel: str) -> tuple[int, ...]:
+    try:
+        r = subprocess.run(
+            [executavel, "--version"], capture_output=True, text=True, timeout=5
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ()
+    texto = (r.stdout or r.stderr).strip().lstrip("vV")
+    numeros = re.match(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?", texto)
+    if not numeros:
+        return ()
+    return tuple(int(x or 0) for x in numeros.groups())
+
+
+def runtime_javascript() -> str | None:
+    node = shutil.which("node")
+    if node and _versao_comando(node) >= (22, 0, 0):
+        return "node"
+    deno = shutil.which("deno")
+    if deno and _versao_comando(deno) >= (2, 3, 0):
+        return "deno"
+    if shutil.which("qjs") or shutil.which("quickjs"):
+        return "quickjs"
+    return None
+
+
+def atualizacao_necessaria(agora: float | None = None) -> bool:
+    agora = agora if agora is not None else time.time()
+    try:
+        ultima = float(ARQUIVO_ATUALIZACAO.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return True
+    return agora - ultima >= INTERVALO_ATUALIZACAO
+
+
+def marcar_atualizacao(agora: float | None = None) -> None:
+    try:
+        ARQUIVO_ATUALIZACAO.write_text(str(agora if agora is not None else time.time()), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def garantir_dependencias() -> bool:
+    """Instala/atualiza yt-dlp com EJS e garante ffmpeg + runtime JS."""
+    tem_yt = _modulo_existe("yt_dlp")
+    tem_rich = _modulo_existe("rich")
+
+    if (not tem_yt) or (not tem_rich) or atualizacao_necessaria():
+        aviso("Atualizando o baixador do YouTube e componentes necessários...")
+        ok = _instalar([
+            sys.executable, "-m", "pip", "install", "--upgrade",
+            "yt-dlp[default]", "rich",
+        ])
+        if ok:
+            marcar_atualizacao()
+        elif not (tem_yt and tem_rich):
+            aviso(
+                "Não consegui instalar o yt-dlp. Verifique a internet e digite:\n"
+                '   python -m pip install -U "yt-dlp[default]" rich\n'
+            )
+            return False
+
+    if shutil.which("ffmpeg") is None:
+        aviso("Instalando o conversor de áudio (ffmpeg)...")
+        if not _instalar(["pkg", "install", "-y", "ffmpeg"]):
+            aviso("Não consegui instalar o ffmpeg. Digite: pkg install -y ffmpeg")
+            return False
+
+    if runtime_javascript() is None:
+        aviso("Instalando/atualizando o componente necessário para o YouTube (Node.js)...")
+        _instalar(["pkg", "update", "-y"])
+        if not _instalar(["pkg", "install", "-y", "nodejs"]):
+            aviso("Não consegui instalar o Node.js 22 ou superior. Digite: pkg update && pkg install nodejs")
+            return False
+
+    if runtime_javascript() is None:
+        aviso("O runtime JavaScript instalado é antigo demais. Atualize o Node.js (versão 22 ou superior).")
+        return False
+    return True
+
+
+def verificar_armazenamento() -> bool:
+    if not (Path.home() / "storage").exists():
+        aviso(
+            "\n  Antes de usar, preciso de acesso ao armazenamento.\n\n"
+            "  1) Digite: termux-setup-storage\n"
+            '  2) Toque em "Permitir".\n'
+            "  3) Abra o programa de novo.\n"
+        )
+        return False
+    return True
+
+
+def _cmd_base() -> list[str]:
+    args = [sys.executable, "-m", "yt_dlp", "--ignore-config"]
+    runtime = runtime_javascript()
+    if runtime:
+        args += ["--js-runtimes", runtime]
+    if ARQUIVO_COOKIES.exists():
+        try:
+            ARQUIVO_COOKIES.chmod(0o600)
+        except OSError:
+            pass
+        args += ["--cookies", str(ARQUIVO_COOKIES)]
+    return args
+
+
+def _opcoes_rede() -> list[str]:
+    return [
+        "--socket-timeout", "20",
+        "--retries", "3",
+        "--fragment-retries", "3",
+    ]
+
+
+def resumir_erro_yt_dlp(stderr: str) -> str:
+    texto = (stderr or "").lower()
+    if "sign in to confirm" in texto or "cookies" in texto and "required" in texto:
+        return "O YouTube pediu login. Adicione um cookies.txt válido na pasta do programa."
+    if "http error 429" in texto or "too many requests" in texto:
+        return "O YouTube limitou temporariamente esta conexão. Tente novamente mais tarde."
+    if "http error 403" in texto or "forbidden" in texto:
+        return "O YouTube recusou o arquivo de áudio. Atualize o programa e tente novamente."
+    if "no supported javascript runtime" in texto:
+        return "O componente JavaScript do YouTube não está disponível. Instale/atualize o Node.js."
+    if "video unavailable" in texto or "this video is not available" in texto:
+        return "Esse vídeo não está disponível para esta conta ou região."
+    return "Não consegui abrir ou baixar esse conteúdo do YouTube."
+
+
+# ---------------------------------------------------------------------------
+# Pen-drive
+# ---------------------------------------------------------------------------
+
+def _candidato_usb(ponto: str, sistema: str) -> bool:
+    if sistema not in FS_PENDRIVE:
+        return False
+    if ponto.startswith("/storage/"):
+        nome = ponto.removeprefix("/storage/").split("/", 1)[0]
+        return nome not in {"emulated", "self", "enc_emulated"} and bool(nome)
+    return ponto.startswith("/mnt/media_rw/")
+
 
 def detectar_pendrives() -> list[Path]:
-    """Procura pen-drives montados em /mnt/media_rw/<UUID> lendo /proc/mounts."""
+    encontrados: list[Path] = []
     montagens = Path("/proc/mounts")
-    if not montagens.exists():
-        return []
-    encontrados = []
-    for linha in montagens.read_text(encoding="utf-8", errors="ignore").splitlines():
-        partes = linha.split()
-        if len(partes) < 3:
-            continue
-        ponto, sistema = partes[1], partes[2]
-        # /proc/mounts escapa espaços como \040; desfaz para virar caminho real.
-        ponto = ponto.replace("\\040", " ")
-        if ponto.startswith("/mnt/media_rw/") and sistema in FS_PENDRIVE:
-            encontrados.append(Path(ponto))
-    return encontrados
+    if montagens.exists():
+        try:
+            linhas = montagens.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            linhas = []
+        for linha in linhas:
+            partes = linha.split()
+            if len(partes) < 3:
+                continue
+            ponto = partes[1].replace("\\040", " ")
+            sistema = partes[2].lower()
+            if _candidato_usb(ponto, sistema):
+                encontrados.append(Path(ponto))
+
+    # Alguns Androids expõem o volume em /storage/<UUID>, mas /proc/mounts mostra
+    # apenas a camada interna. Procura também esses pontos de montagem visíveis.
+    storage = Path("/storage")
+    try:
+        if storage.exists():
+            for p in storage.iterdir():
+                if p.name not in {"emulated", "self", "enc_emulated"}:
+                    encontrados.append(p)
+    except OSError:
+        pass
+
+    unicos: list[Path] = []
+    vistos: set[str] = set()
+    for p in encontrados:
+        chave = str(p)
+        if chave not in vistos:
+            vistos.add(chave)
+            unicos.append(p)
+    return unicos
 
 
 def escolher_pendrive(cons) -> Path | None:
-    """Detecta os pen-drives e, se houver vários, deixa o usuário escolher."""
-    drives = detectar_pendrives()
+    drives = [p for p in detectar_pendrives() if testar_escrita(p)]
     if not drives:
         cons.print(
-            "  [red]Nenhum pen-drive encontrado.[/] "
-            "Conecte o pen-drive no adaptador USB e tente de novo."
+            "  [red]Nenhum pen-drive gravável foi encontrado.[/]\n"
+            "  Conecte o USB pelo adaptador OTG, autorize o acesso no Android e tente de novo."
         )
         return None
     if len(drives) == 1:
         return drives[0]
 
-    # Mais de um pen-drive: numera sem mostrar códigos técnicos.
-    cons.print("  Encontrei mais de um pen-drive. Qual você quer usar?\n")
+    cons.print("  Encontrei mais de um armazenamento removível. Qual você quer usar?\n")
     for i in range(1, len(drives) + 1):
         cons.print(f"   {i}) Pen-drive {i}")
     escolha = input("\n  Digite o número e tecle Enter: ").strip()
@@ -162,207 +384,95 @@ def escolher_pendrive(cons) -> Path | None:
 
 
 def testar_escrita(raiz: Path) -> bool:
-    """Confere se dá para escrever no pen-drive criando e apagando um arquivo de teste."""
-    teste = raiz / ".write_test"
+    teste = raiz / ".baixador_write_test"
     try:
-        teste.touch()
+        teste.touch(exist_ok=False)
         teste.unlink(missing_ok=True)
         return True
     except OSError:
-        return False
-
-
-# ===========================================================================
-# Interface (rich é importado de forma preguiçosa, só quando existe)
-# ===========================================================================
-
-def console():
-    """Devolve um Console do rich (importação preguiçosa)."""
-    from rich.console import Console
-    return Console()
-
-
-def aviso(msg: str) -> None:
-    print(msg)
-
-
-def limpar_tela(cons=None) -> None:
-    """Limpa a tela para mostrar uma etapa de cada vez."""
-    (cons or console()).clear()
-
-
-def cabecalho_passo(cons, numero: int, titulo: str) -> None:
-    """Mostra um cabeçalho curto de progresso do fluxo (Passo N de 3)."""
-    cons.print(f"  Passo {numero} de 3: {titulo}\n")
-
-
-def pausa(cons) -> None:
-    """Espera o usuário ler a tela antes de voltar ao menu."""
-    input("\n  Tecle Enter para voltar ao menu...")
-
-
-# ===========================================================================
-# Preparação do ambiente
-# ===========================================================================
-
-def _instalar(args: list[str]) -> bool:
-    """Roda um instalador (pip/pkg) e diz se deu certo. Nunca usa shell=True."""
-    try:
-        subprocess.run(args, check=True)
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return False
-
-
-def garantir_dependencias() -> bool:
-    """Verifica e instala o que faltar: rich, yt-dlp e ffmpeg."""
-    # rich e yt-dlp (Python)
-    faltando = []
-    try:
-        import rich  # noqa: F401
-    except ImportError:
-        faltando.append("rich")
-    try:
-        import yt_dlp  # noqa: F401
-    except ImportError:
-        faltando.append("yt-dlp")
-
-    if faltando:
-        aviso("Instalando programas necessários (rich, yt-dlp)... aguarde.")
-        ok = _instalar([sys.executable, "-m", "pip", "install", "--upgrade", *faltando])
-        if not ok:
-            aviso(
-                "Não consegui instalar automaticamente.\n"
-                "Por favor, digite no Termux:\n"
-                "   pip install --upgrade rich yt-dlp\n"
-                "e abra o app de novo."
-            )
-            return False
-
-    # ffmpeg (converte o áudio em MP3)
-    if shutil.which("ffmpeg") is None:
-        aviso("Instalando o conversor de áudio (ffmpeg)... aguarde.")
-        ok = _instalar(["pkg", "install", "-y", "ffmpeg"])
-        if not ok or shutil.which("ffmpeg") is None:
-            aviso(
-                "Não consegui instalar o ffmpeg.\n"
-                "Por favor, digite no Termux:\n"
-                "   pkg install -y ffmpeg\n"
-                "e abra o app de novo."
-            )
-            return False
-    return True
-
-
-def verificar_armazenamento() -> bool:
-    """Confere se o acesso ao armazenamento já foi liberado (termux-setup-storage)."""
-    if not (Path.home() / "storage").exists():
-        aviso(
-            "\n  Antes de usar, preciso de acesso à memória do celular.\n\n"
-            "  1) Digite no Termux:  termux-setup-storage\n"
-            '  2) Toque em "Permitir" na tela que aparecer.\n'
-            "  3) Abra este app de novo.\n\n"
-            "  É só uma vez. Até já!\n"
-        )
-        return False
-    return True
-
-
-# ===========================================================================
-# Coleta e download
-# ===========================================================================
-
-def _cmd_base() -> list[str]:
-    """Argumentos comuns do yt-dlp, com cookies se houver."""
-    base = []
-    if ARQUIVO_COOKIES.exists():
-        # Protege o arquivo de sessão: só o dono pode ler.
         try:
-            ARQUIVO_COOKIES.chmod(0o600)
+            teste.unlink(missing_ok=True)
         except OSError:
             pass
-        base += ["--cookies", str(ARQUIVO_COOKIES)]
-    return base
+        return False
 
 
-def coletar_itens(url: str) -> list[tuple[str, str]]:
-    """Lista (id, título) de um link (música ou playlist inteira)."""
+# ---------------------------------------------------------------------------
+# Coleta e download
+# ---------------------------------------------------------------------------
+
+def coletar_itens(url: str, tipo: str) -> tuple[list[tuple[str, str]], str | None]:
     args = [
-        "yt-dlp", "--flat-playlist", "--no-warnings",
+        *_cmd_base(),
+        "--flat-playlist", "--no-warnings",
         "--print", "%(id)s\t%(title)s",
-        *_cmd_base(), "--", url,
+        *_opcoes_rede(),
+        "--no-playlist" if tipo == "video" else "--yes-playlist",
+        "--", url,
     ]
     saida = subprocess.run(args, capture_output=True, text=True)
     if saida.returncode != 0:
-        return []
-    itens = []
+        return [], resumir_erro_yt_dlp(saida.stderr)
+
+    itens: list[tuple[str, str]] = []
+    vistos: set[str] = set()
     for linha in saida.stdout.splitlines():
-        if "\t" in linha:
-            vid, titulo = linha.split("\t", 1)
-            if vid.strip():
-                itens.append((vid.strip(), titulo.strip()))
-    return itens
+        if "\t" not in linha:
+            continue
+        vid, titulo = linha.split("\t", 1)
+        vid, titulo = vid.strip(), titulo.strip()
+        if id_valido(vid) and vid not in vistos:
+            vistos.add(vid)
+            itens.append((vid, titulo or vid))
+    if tipo == "video" and itens:
+        itens = itens[:1]
+    return itens, None
 
 
-def nome_playlist(url: str) -> str:
-    """Tenta descobrir o nome da playlist para criar a subpasta."""
-    args = ["yt-dlp", "--flat-playlist", "--no-warnings",
-            "--print", "%(playlist_title)s", *_cmd_base(), "--", url]
-    saida = subprocess.run(args, capture_output=True, text=True)
-    primeira = saida.stdout.splitlines()[0].strip() if saida.stdout.strip() else ""
-    return nome_pasta_seguro(primeira) if primeira and primeira != "NA" else "Playlist"
-
-
-def baixar_uma(video_id: str, destino: Path, limite_banda) -> str:
-    """Baixa UMA música (um subprocess). Retorna 'concluido' ou 'erro'.
-
-    A URL é montada a partir do id validado — nunca interpolada em shell.
-    Não usa --download-archive aqui: o histórico é gravado pela orquestração,
-    numa thread só, para evitar corrida de escrita entre os processos paralelos.
-    """
+def baixar_uma(video_id: str, destino: Path, limite_banda: str | None) -> tuple[str, str | None]:
     if not id_valido(video_id):
-        return "erro"
-    url = "https://www.youtube.com/watch?v=" + video_id
+        return "erro", "ID de vídeo inválido."
+
+    url = f"https://www.youtube.com/watch?v={video_id}"
     args = [
-        "yt-dlp",
+        *_cmd_base(),
+        "--no-playlist", "--no-warnings",
+        *_opcoes_rede(),
+        "-f", "bestaudio/best",
         "-x", "--audio-format", "mp3", "--audio-quality", "0",
         "--embed-metadata", "--embed-thumbnail",
-        "--no-warnings",
-        "-o", str(destino / "%(title)s.%(ext)s"),
+        "--windows-filenames", "--trim-filenames", "180",
+        "-o", str(destino / "%(title)s [%(id)s].%(ext)s"),
     ]
-    args += _cmd_base()
     if limite_banda:
         args += ["--limit-rate", limite_banda]
-    args += ["--", url]  # '--' impede o yt-dlp de tratar a URL como opção
+    args += ["--", url]
 
     resultado = subprocess.run(args, capture_output=True, text=True)
-    return "concluido" if resultado.returncode == 0 else "erro"
+    if resultado.returncode == 0:
+        return "concluido", None
+    return "erro", resumir_erro_yt_dlp(resultado.stderr)
 
 
-# ===========================================================================
-# Orquestração com barra de progresso
-# ===========================================================================
-
-def baixar_tudo(itens, destino: Path, simultaneos: int, limite_banda,
-                archive: Path = None) -> None:
-    """Baixa a lista de músicas em paralelo (um subprocess por música)."""
+def baixar_tudo(itens, destino: Path, simultaneos: int, limite_banda: str | None, archive: Path) -> None:
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    archive = archive or ARQUIVO_ARCHIVE
     destino.mkdir(parents=True, exist_ok=True)
-    existentes = mp3s_normalizados(destino)        # dedup por nome: só o que já está aqui
-    ja_baixados = ids_ja_baixados(archive)         # dedup exato pelo ID do YouTube
+    existentes = mp3s_normalizados(destino)
+    ja_baixados = ids_ja_baixados(archive)
 
-    # Separa o que vai baixar do que já existe (ID igual OU nome parecido).
-    a_baixar, pulados = [], []
+    a_baixar: list[tuple[str, str]] = []
+    pulados: list[str] = []
     for vid, titulo in itens:
         if not id_valido(vid):
-            continue  # ignora linhas estranhas
+            continue
         if vid in ja_baixados or eh_duplicata(titulo, existentes):
             pulados.append(titulo)
-        else:
-            a_baixar.append((vid, titulo))
-            existentes.append(normalizar_titulo(titulo))  # evita duplicar na própria lista
+            continue
+        a_baixar.append((vid, titulo))
+        normalizado = normalizar_titulo(titulo)
+        if normalizado:
+            existentes.append(normalizado)
 
     cons = console()
     for titulo in pulados:
@@ -375,68 +485,41 @@ def baixar_tudo(itens, destino: Path, simultaneos: int, limite_banda,
     total = len(a_baixar)
     concluidos = erros = 0
     with ThreadPoolExecutor(max_workers=simultaneos) as pool:
-        futuros = {}
-        for i, (vid, titulo) in enumerate(a_baixar, start=1):
-            cons.print(f"  Baixando {i} de {total}: {titulo}")
-            futuros[pool.submit(baixar_uma, vid, destino, limite_banda)] = (vid, titulo)
-        for fut in as_completed(futuros):
+        futuros = {
+            pool.submit(baixar_uma, vid, destino, limite_banda): (vid, titulo)
+            for vid, titulo in a_baixar
+        }
+        for i, fut in enumerate(as_completed(futuros), start=1):
             vid, titulo = futuros[fut]
             try:
-                status = fut.result()
+                status, detalhe = fut.result()
             except Exception:
-                status = "erro"
+                status, detalhe = "erro", "Erro inesperado durante o download."
+
             if status == "concluido":
                 concluidos += 1
                 try:
-                    registrar_baixado(vid, archive)  # uma thread só, sem corrida
+                    registrar_baixado(vid, archive)
                 except OSError:
-                    pass  # pen-drive pode ter saído; não trava o resto
-                cons.print(f"  [green]Pronto:[/] {titulo}")
+                    pass
+                cons.print(f"  [green]Pronto {i}/{total}:[/] {titulo}")
             else:
                 erros += 1
-                cons.print(f"  [red]Não consegui baixar:[/] {titulo}")
+                cons.print(f"  [red]Falhou {i}/{total}:[/] {titulo}")
+                if detalhe:
+                    cons.print(f"    {detalhe}")
 
     cons.print(f"\n  [green]Concluí: {concluidos} música(s).[/]")
     if erros:
-        cons.print(f"  [red]Não consegui: {erros} música(s).[/]")
+        cons.print(f"  [red]Falharam: {erros} música(s).[/]")
 
 
-# ===========================================================================
-# Mensagens e menus
-# ===========================================================================
-
-def mensagem_final(subpasta: str) -> None:
-    cons = console()
-    cons.print(
-        f"\n  [bold green]Pronto![/] As músicas estão na pasta Música, "
-        f"dentro de '[bold]{subpasta}[/]'.\n\n"
-        "  Para passar pro pendrive:\n"
-        "   1) Abra o gerenciador de arquivos do celular (Meus Arquivos).\n"
-        "   2) Conecte o pendrive pelo adaptador.\n"
-        "   3) Selecione a pasta e use 'Copiar' -> 'Pendrive'.\n"
-    )
-
-
-def mensagem_final_pendrive() -> None:
-    cons = console()
-    cons.print(
-        "\n  [green]Pronto![/] Suas músicas já estão salvas no pen-drive.\n"
-        "  Pode tirar o pen-drive com segurança e usar onde quiser."
-    )
-
-
-def aviso_cookies() -> None:
-    # O suporte a login por cookies continua funcionando por baixo,
-    # mas nada disso aparece para o usuário.
-    return None
-
-
-def escolher_velocidade() -> tuple[int, str]:
+def escolher_velocidade() -> tuple[int, str | None]:
     cons = console()
     cons.print("\n  Qual velocidade?")
-    cons.print("   [bold]1[/]) Rápido   (5 músicas ao mesmo tempo)")
-    cons.print("   [bold]2[/]) Médio    (4 ao mesmo tempo)")
-    cons.print("   [bold]3[/]) Lento    (3 ao mesmo tempo, mais leve)")
+    cons.print("   [bold]1[/]) Rápido   (4 músicas ao mesmo tempo)")
+    cons.print("   [bold]2[/]) Médio    (3 ao mesmo tempo)")
+    cons.print("   [bold]3[/]) Lento    (2 ao mesmo tempo, mais leve)")
     escolha = input("  Digite 1, 2 ou 3: ").strip() or "2"
     _, simultaneos, banda = VELOCIDADES.get(escolha, VELOCIDADES["2"])
     return simultaneos, banda
@@ -445,69 +528,50 @@ def escolher_velocidade() -> tuple[int, str]:
 def fluxo_baixar() -> None:
     cons = console()
 
-    # --- Passo 1 de 3: Conectar o pen-drive --------------------------------
     limpar_tela(cons)
     cabecalho_passo(cons, 1, "Conectar o pen-drive")
-    cons.print("  Procurando o pen-drive...\n")
+    cons.print("  Procurando um armazenamento USB gravável...\n")
     pendrive = escolher_pendrive(cons)
     if pendrive is None:
-        return  # mensagem já mostrada; volta ao menu
-
-    if not testar_escrita(pendrive):
-        cons.print("\n  [red]Não consegui salvar no pen-drive.[/] "
-                   "Tire e conecte de novo pelo adaptador USB.")
         return
 
-    # A pasta de destino continua sendo criada por baixo, sem aparecer pro usuário.
     destino = pendrive / PASTA_DESTINO_PENDRIVE
     try:
         destino.mkdir(parents=True, exist_ok=True)
     except OSError:
-        cons.print("\n  [red]Não consegui salvar no pen-drive.[/] "
-                   "Tire e conecte de novo pelo adaptador USB.")
+        cons.print("\n  [red]Não consegui criar a pasta no pen-drive.[/]")
         return
     archive = destino / ARQUIVO_HISTORICO_PENDRIVE
 
-    cons.print("\n  [green]Pen-drive conectado![/] Vou salvar as músicas nele.")
+    cons.print("\n  [green]Pen-drive conectado![/]")
     input("\n  Tecle Enter para continuar...")
 
-    # --- Passo 2 de 3: Escolher a música -----------------------------------
     limpar_tela(cons)
     cabecalho_passo(cons, 2, "Escolher a música")
-    cons.print('  No YouTube, toque em "Compartilhar" e depois em "Copiar link".')
-    cons.print("  Depois cole aqui e tecle Enter.\n")
-    url = input("  Cole o link: ").strip()
-    if not url.startswith("http"):
-        cons.print("\n  [red]Esse link não parece certo.[/] Tente copiar de novo.")
+    cons.print('  No YouTube, toque em "Compartilhar" e depois em "Copiar link".\n')
+    recebido = input("  Cole o link: ").strip()
+    classificado = classificar_url_youtube(recebido)
+    if classificado is None:
+        cons.print("\n  [red]Esse não parece ser um link válido do YouTube.[/]")
         return
+    tipo, url = classificado
 
     cons.print("\n  Lendo o link, um momento...")
-    # Link de UMA música (mesmo que venha com '&list='): só essa música.
-    # Página de lista de músicas: baixa todas, juntas no pen-drive.
-    eh_link_de_musica = ("watch?v=" in url) or ("youtu.be/" in url)
-    itens = coletar_itens(url)
+    itens, erro = coletar_itens(url, tipo)
     if not itens:
-        cons.print(
-            "\n  [red]Não consegui abrir esse link.[/] "
-            "Veja se você está na internet e se o link está certo."
-        )
+        cons.print(f"\n  [red]{erro or 'Não encontrei músicas nesse link.'}[/]")
         return
-    if eh_link_de_musica:
-        itens = itens[:1]
 
-    # Confirmar antes de baixar.
     resposta = input(
-        f"\n  Encontrei {len(itens)} música(s). Quer baixar? (digite: sim ou nao) "
+        f"\n  Encontrei {len(itens)} música(s). Quer baixar? (sim/nao) "
     ).strip().lower()
     if not resposta.startswith("s"):
         cons.print("\n  Tudo bem, não vou baixar.")
         return
 
-    # Tela só para escolher a velocidade.
     limpar_tela(cons)
     simultaneos, banda = escolher_velocidade()
 
-    # --- Passo 3 de 3: Baixar ----------------------------------------------
     limpar_tela(cons)
     cabecalho_passo(cons, 3, "Baixar")
     try:
@@ -515,16 +579,15 @@ def fluxo_baixar() -> None:
     except KeyboardInterrupt:
         cons.print("\n  Você cancelou.")
         return
-    except Exception:
-        cons.print("\n  [red]Algo deu errado no download.[/] Tente de novo.")
+
+    if not destino.exists():
+        cons.print("\n  [red]O pen-drive foi removido durante o download.[/]")
         return
 
-    # Se o pen-drive sumiu no meio, avisa de forma clara.
-    if not destino.exists():
-        cons.print("\n  [red]O pen-drive foi removido no meio do download.[/] "
-                   "Conecte de novo e baixe as que faltaram.")
-        return
-    mensagem_final_pendrive()
+    cons.print(
+        "\n  [green]Pronto![/] As músicas foram salvas no pen-drive, "
+        f"na pasta [bold]{PASTA_DESTINO_PENDRIVE}[/]."
+    )
 
 
 def criar_atalho() -> None:
@@ -538,19 +601,9 @@ def criar_atalho() -> None:
     ATALHO.chmod(0o700)
     cons.print(
         "\n  [green]Atalho criado![/]\n\n"
-        "  Para colocar na tela inicial:\n"
-        "   1) Instale o app Termux:Widget (na loja).\n"
-        "   2) Segure um espaço vazio na tela inicial e escolha Widgets.\n"
-        "   3) Escolha o Termux:Widget e toque em 'Baixar-Musica'.\n\n"
-        "  Aí é só um toque para abrir o baixador!"
+        "  Instale o Termux:Widget pelo F-Droid, adicione o widget à tela inicial "
+        "e toque em 'Baixar-Musica'."
     )
-
-
-def fechar_termux() -> None:
-    """Encerra o app de forma normal (sem derrubar o Termux à força)."""
-    cons = console()
-    cons.print("\n  Até logo!")
-    sys.exit(0)
 
 
 def menu_principal() -> None:
@@ -569,16 +622,12 @@ def menu_principal() -> None:
             criar_atalho()
             pausa(cons)
         elif escolha == "3":
-            fechar_termux()
-            return  # fechar_termux já encerra; mantido por segurança
+            cons.print("\n  Até logo!")
+            return
         else:
             cons.print("\n  Não entendi. Digite 1, 2 ou 3.")
             pausa(cons)
 
-
-# ===========================================================================
-# Início
-# ===========================================================================
 
 def main() -> int:
     try:
@@ -592,10 +641,9 @@ def main() -> int:
         print("\nAté logo!")
         return 0
     except Exception:
-        # Nunca mostrar erro técnico cru para o usuário.
         print(
             "\nOps! Algo inesperado aconteceu.\n"
-            "Feche e abra o app de novo. Se continuar, verifique sua internet."
+            "Feche e abra o programa de novo. Se continuar, verifique sua internet."
         )
         return 1
 
